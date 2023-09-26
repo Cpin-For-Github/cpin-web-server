@@ -62,4 +62,90 @@ void Event::wait() {
 void Event::signal() {
   if (event_handle) SetEvent(event_handle);
 }
+
+TaskManager::TaskManager(int tNum, int qMaxSize)
+    : tNum(tNum), qMaxSize(qMaxSize) {
+  taskQueue = new TaskType[qMaxSize];
+  threads = new HANDLE[tNum];
+
+  hMutex = CreateMutex(nullptr, false, nullptr);
+  hEvent = CreateEvent(nullptr, true, false, nullptr);
+  hFull = CreateEvent(nullptr, true, false, nullptr);
+}
+
+unsigned long __stdcall TaskManager::work(void* arg) {
+  auto mgr = static_cast<TaskManager*>(arg);
+  TaskType task;
+
+  while (true) {
+    WaitForSingleObject(mgr->hEvent, INFINITE);
+    if (!mgr->state) break;
+    WaitForSingleObject(mgr->hMutex, INFINITE);
+
+    if (mgr->qFront != mgr->qRear) {
+      task = mgr->taskQueue[mgr->qFront];
+      mgr->qFront = (mgr->qFront + 1) % mgr->qMaxSize;
+
+      SetEvent(mgr->hFull);
+      ReleaseMutex(mgr->hMutex);
+      if (task) task();
+
+    } else {
+      ReleaseMutex(mgr->hMutex);
+    }
+  }
+
+  return 0;
+}
+
+void TaskManager::run() {
+  if (state) return;
+
+  state = 1;
+  for (int i = 0; i < tNum; i++) {
+    threads[i] = CreateThread(nullptr, 0, work, this, 0, nullptr);
+  }
+}
+
+void TaskManager::addTask(TaskType task) {
+  if (!state) return;
+
+  WaitForSingleObject(hMutex, INFINITE);
+  while ((qRear + 1) % qMaxSize == qFront) {
+    ReleaseMutex(hMutex);
+    WaitForSingleObject(hFull, INFINITE);
+    WaitForSingleObject(hMutex, INFINITE);
+  }
+
+  taskQueue[qRear] = task;
+  qRear = (qRear + 1) % qMaxSize;
+
+  ReleaseMutex(hMutex);
+  SetEvent(hEvent);
+}
+
+void TaskManager::stop() {
+  if (!state) return;
+
+  state = 0;
+  for (int i = 0; i < tNum; i++) {
+    SetEvent(hEvent);
+  }
+
+  WaitForMultipleObjects(tNum, threads, true, INFINITE);
+}
+
+TaskManager::~TaskManager() {
+  stop();
+  if (taskQueue) delete[] taskQueue;
+  if (threads) delete[] threads;
+
+  taskQueue = nullptr;
+  threads = nullptr;
+
+  CloseHandle(hMutex);
+  CloseHandle(hEvent);
+  CloseHandle(hFull);
+}
+
 }  // namespace cpin
